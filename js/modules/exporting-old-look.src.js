@@ -2,9 +2,16 @@
  * @license
  * Highcharts compatibilty pack for bringing the 2.x look for the print/export buttons back in Highcharts 3.
  * License: MIT
- * Author: Torstein Hønsi
+ * Author: Torstein Honsi
  */
-(function (Highcharts) {
+
+(function (factory) {
+	if (typeof module === 'object' && module.exports) {
+		module.exports = factory;
+	} else {
+		factory(Highcharts);
+	}
+}(function (Highcharts) {
 
 	var defaultOptions = Highcharts.getOptions(),
 		symbols = Highcharts.Renderer.prototype.symbols,
@@ -126,5 +133,4 @@
 		]);
 	};
 
-
-}(Highcharts));
+}));

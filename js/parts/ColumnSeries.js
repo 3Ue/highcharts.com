@@ -3,7 +3,7 @@
  */
 defaultPlotOptions.column = merge(defaultSeriesOptions, {
 	borderColor: '#FFFFFF',
-	borderWidth: 1,
+	//borderWidth: 1,
 	borderRadius: 0,
 	//colorByPoint: undefined,
 	groupPadding: 0.2,
@@ -17,7 +17,8 @@ defaultPlotOptions.column = merge(defaultSeriesOptions, {
 	states: {
 		hover: {
 			brightness: 0.1,
-			shadow: false
+			shadow: false,
+			halo: false
 		},
 		select: {
 			color: '#C0C0C0',
@@ -30,7 +31,12 @@ defaultPlotOptions.column = merge(defaultSeriesOptions, {
 		verticalAlign: null, // auto
 		y: null
 	},
+	softThreshold: false,
+	startFromThreshold: true, // false doesn't work well: http://jsfiddle.net/highcharts/hz8fopan/14/
 	stickyTracking: false,
+	tooltip: {
+		distance: 6
+	},
 	threshold: 0
 });
 
@@ -41,14 +47,15 @@ var ColumnSeries = extendClass(Series, {
 	type: 'column',
 	pointAttrToOptions: { // mapping between SVG attributes and the corresponding options
 		stroke: 'borderColor',
-		'stroke-width': 'borderWidth',
 		fill: 'color',
 		r: 'borderRadius'
 	},
+	cropShoulder: 0,
+	directTouch: true, // When tooltip is not shared, this series (and derivatives) requires direct touch/hover. KD-tree does not apply.
 	trackerGroups: ['group', 'dataLabelsGroup'],
-	negStacks: true, // use separate negative stacks, unlike area stacks where a negative 
+	negStacks: true, // use separate negative stacks, unlike area stacks where a negative
 		// point is substracted from previous (#1910)
-	
+
 	/**
 	 * Initialize the series
 	 */
@@ -71,7 +78,7 @@ var ColumnSeries = extendClass(Series, {
 
 	/**
 	 * Return the width and x offset of the columns adjusted for grouping, groupPadding, pointPadding,
-	 * pointWidth etc. 
+	 * pointWidth etc.
 	 */
 	getColumnMetrics: function () {
 
@@ -82,7 +89,6 @@ var ColumnSeries = extendClass(Series, {
 			reversedXAxis = xAxis.reversed,
 			stackKey,
 			stackGroups = {},
-			columnIndex,
 			columnCount = 0;
 
 		// Get the total number of column type series.
@@ -93,7 +99,8 @@ var ColumnSeries = extendClass(Series, {
 		} else {
 			each(series.chart.series, function (otherSeries) {
 				var otherOptions = otherSeries.options,
-					otherYAxis = otherSeries.yAxis;
+					otherYAxis = otherSeries.yAxis,
+					columnIndex;
 				if (otherSeries.type === series.type && otherSeries.visible &&
 						yAxis.len === otherYAxis.len && yAxis.pos === otherYAxis.pos) {  // #642, #2086
 					if (otherOptions.stacking) {
@@ -111,29 +118,71 @@ var ColumnSeries = extendClass(Series, {
 		}
 
 		var categoryWidth = mathMin(
-				mathAbs(xAxis.transA) * (xAxis.ordinalSlope || options.pointRange || xAxis.closestPointRange || 1), 
+				mathAbs(xAxis.transA) * (xAxis.ordinalSlope || options.pointRange || xAxis.closestPointRange || xAxis.tickInterval || 1), // #2610
 				xAxis.len // #1535
 			),
 			groupPadding = categoryWidth * options.groupPadding,
 			groupWidth = categoryWidth - 2 * groupPadding,
 			pointOffsetWidth = groupWidth / columnCount,
-			optionPointWidth = options.pointWidth,
-			pointPadding = defined(optionPointWidth) ? (pointOffsetWidth - optionPointWidth) / 2 :
-				pointOffsetWidth * options.pointPadding,
-			pointWidth = pick(optionPointWidth, pointOffsetWidth - 2 * pointPadding), // exact point width, used in polar charts
-			colIndex = (reversedXAxis ? 
-				columnCount - (series.columnIndex || 0) : // #1251
-				series.columnIndex) || 0,
+			pointWidth = mathMin(
+				options.maxPointWidth || xAxis.len,
+				pick(options.pointWidth, pointOffsetWidth * (1 - 2 * options.pointPadding))
+			),
+			pointPadding = (pointOffsetWidth - pointWidth) / 2,
+			colIndex = (series.columnIndex || 0) + (reversedXAxis ? 1 : 0), // #1251, #3737
 			pointXOffset = pointPadding + (groupPadding + colIndex *
 				pointOffsetWidth - (categoryWidth / 2)) *
 				(reversedXAxis ? -1 : 1);
 
 		// Save it for reading in linked series (Error bars particularly)
-		return (series.columnMetrics = { 
-			width: pointWidth, 
-			offset: pointXOffset 
-		});
-			
+		series.columnMetrics = {
+			width: pointWidth,
+			offset: pointXOffset
+		};
+		return series.columnMetrics;
+
+	},
+
+	/**
+	 * Make the columns crisp. The edges are rounded to the nearest full pixel.
+	 */
+	crispCol: function (x, y, w, h) {
+		var chart = this.chart,
+			borderWidth = this.borderWidth,
+			xCrisp = -(borderWidth % 2 ? 0.5 : 0),
+			yCrisp = borderWidth % 2 ? 0.5 : 1,
+			right,
+			bottom,
+			fromTop;
+
+		if (chart.inverted && chart.renderer.isVML) {
+			yCrisp += 1;
+		}
+
+		// Horizontal. We need to first compute the exact right edge, then round it
+		// and compute the width from there.
+		right = Math.round(x + w) + xCrisp;
+		x = Math.round(x) + xCrisp;
+		w = right - x;
+
+		// Vertical
+		bottom = Math.round(y + h) + yCrisp;
+		fromTop = mathAbs(y) <= 0.5 && bottom > 0.5; // #4504, #4656
+		y = Math.round(y) + yCrisp;
+		h = bottom - y;
+
+		// Top edges are exceptions
+		if (fromTop) {
+			y -= 1;
+			h += 1;
+		}
+
+		return {
+			x: x,
+			y: y,
+			width: w,
+			height: h
+		};
 	},
 
 	/**
@@ -143,45 +192,51 @@ var ColumnSeries = extendClass(Series, {
 		var series = this,
 			chart = series.chart,
 			options = series.options,
-			borderWidth = options.borderWidth,
+			borderWidth = series.borderWidth = pick(
+				options.borderWidth,
+				series.closestPointRange * series.xAxis.transA < 2 ? 0 : 1 // #3635
+			),
 			yAxis = series.yAxis,
 			threshold = options.threshold,
 			translatedThreshold = series.translatedThreshold = yAxis.getThreshold(threshold),
 			minPointLength = pick(options.minPointLength, 5),
 			metrics = series.getColumnMetrics(),
 			pointWidth = metrics.width,
-			seriesBarW = series.barW = mathCeil(mathMax(pointWidth, 1 + 2 * borderWidth)), // rounded and postprocessed for border width
-			pointXOffset = series.pointXOffset = metrics.offset,
-			xCrisp = -(borderWidth % 2 ? 0.5 : 0),
-			yCrisp = borderWidth % 2 ? 0.5 : 1;
+			seriesBarW = series.barW = mathMax(pointWidth, 1 + 2 * borderWidth), // postprocessed for border width
+			pointXOffset = series.pointXOffset = metrics.offset;
 
-		if (chart.renderer.isVML && chart.inverted) {
-			yCrisp += 1;
+		if (chart.inverted) {
+			translatedThreshold -= 0.5; // #3355
+		}
+
+		// When the pointPadding is 0, we want the columns to be packed tightly, so we allow individual
+		// columns to have individual sizes. When pointPadding is greater, we strive for equal-width
+		// columns (#2694).
+		if (options.pointPadding) {
+			seriesBarW = mathCeil(seriesBarW);
 		}
 
 		Series.prototype.translate.apply(series);
 
-		// record the new values
+		// Record the new values
 		each(series.points, function (point) {
-			var plotY = mathMin(mathMax(-999, point.plotY), yAxis.len + 999), // Don't draw too far outside plot area (#1303)
-				yBottom = pick(point.yBottom, translatedThreshold),
+			var yBottom = mathMin(pick(point.yBottom, translatedThreshold), 9e4), // #3575
+				safeDistance = 999 + mathAbs(yBottom),
+				plotY = mathMin(mathMax(-safeDistance, point.plotY), yAxis.len + safeDistance), // Don't draw too far outside plot area (#1303, #2241, #4264)
 				barX = point.plotX + pointXOffset,
 				barW = seriesBarW,
 				barY = mathMin(plotY, yBottom),
-				right,
-				bottom,
-				fromTop,
-				fromLeft,
+				up,
 				barH = mathMax(plotY, yBottom) - barY;
 
 			// Handle options.minPointLength
 			if (mathAbs(barH) < minPointLength) {
 				if (minPointLength) {
 					barH = minPointLength;
-					barY =
-						mathRound(mathAbs(barY - translatedThreshold) > minPointLength ? // stacked
+					up = (!yAxis.reversed && !point.negative) || (yAxis.reversed && point.negative);
+					barY = mathAbs(barY - translatedThreshold) > minPointLength ? // stacked
 							yBottom - minPointLength : // keep position
-							translatedThreshold - (yAxis.translate(point.y, 0, 1, 0, 1) <= translatedThreshold ? minPointLength : 0)); // use exact yAxis.translation (#1485)
+							translatedThreshold - (up ? minPointLength : 0); // #1485, #4051
 				}
 			}
 
@@ -189,48 +244,26 @@ var ColumnSeries = extendClass(Series, {
 			point.barX = barX;
 			point.pointWidth = pointWidth;
 
-
-			// Round off to obtain crisp edges
-			fromLeft = mathAbs(barX) < 0.5;
-			right = mathRound(barX + barW) + xCrisp;
-			barX = mathRound(barX) + xCrisp;
-			barW = right - barX;
-
-			fromTop = mathAbs(barY) < 0.5;
-			bottom = mathRound(barY + barH) + yCrisp;
-			barY = mathRound(barY) + yCrisp;
-			barH = bottom - barY;
-
-			// Top and left edges are exceptions
-			if (fromLeft) {
-				barX += 1;
-				barW -= 1;
-			}
-			if (fromTop) {
-				barY -= 1;
-				barH += 1;
-			}
+			// Fix the tooltip on center of grouped columns (#1216, #424, #3648)
+			point.tooltipPos = chart.inverted ?
+				[yAxis.len + yAxis.pos - chart.plotLeft - plotY, series.xAxis.len - barX - barW / 2, barH] :
+				[barX + barW / 2, plotY + yAxis.pos - chart.plotTop, barH];
 
 			// Register shape type and arguments to be used in drawPoints
 			point.shapeType = 'rect';
-			point.shapeArgs = {
-				x: barX,
-				y: barY,
-				width: barW,
-				height: barH
-			};
+			point.shapeArgs = series.crispCol(barX, barY, barW, barH);
 		});
 
 	},
 
 	getSymbol: noop,
-	
+
 	/**
 	 * Use a solid rectangle like the area series types
 	 */
-	drawLegendSymbol: AreaSeries.prototype.drawLegendSymbol,
-	
-	
+	drawLegendSymbol: LegendSymbolMixin.drawRectangle,
+
+
 	/**
 	 * Columns have no graph
 	 */
@@ -243,27 +276,37 @@ var ColumnSeries = extendClass(Series, {
 	 */
 	drawPoints: function () {
 		var series = this,
+			chart = this.chart,
 			options = series.options,
-			renderer = series.chart.renderer,
-			shapeArgs;
-
+			renderer = chart.renderer,
+			animationLimit = options.animationLimit || 250,
+			shapeArgs,
+			pointAttr;
 
 		// draw the columns
 		each(series.points, function (point) {
 			var plotY = point.plotY,
-				graphic = point.graphic;
+				graphic = point.graphic,
+				borderAttr;
 
 			if (plotY !== UNDEFINED && !isNaN(plotY) && point.y !== null) {
 				shapeArgs = point.shapeArgs;
-				
+
+				borderAttr = defined(series.borderWidth) ? {
+					'stroke-width': series.borderWidth
+				} : {};
+
+				pointAttr = point.pointAttr[point.selected ? SELECT_STATE : NORMAL_STATE] || series.pointAttr[NORMAL_STATE];
+
 				if (graphic) { // update
 					stop(graphic);
-					graphic.animate(merge(shapeArgs));
+					graphic.attr(borderAttr).attr(pointAttr)[chart.pointCount < animationLimit ? 'animate' : 'attr'](merge(shapeArgs)); // #4267
 
 				} else {
 					point.graphic = graphic = renderer[point.shapeType](shapeArgs)
-						.attr(point.pointAttr[point.selected ? SELECT_STATE : NORMAL_STATE])
-						.add(series.group)
+						.attr(borderAttr)
+						.attr(pointAttr)
+						.add(point.group || series.group)
 						.shadow(options.shadow, null, options.stacking && !options.borderRadius);
 				}
 
@@ -272,110 +315,6 @@ var ColumnSeries = extendClass(Series, {
 			}
 		});
 	},
-
-	/**
-	 * Add tracking event listener to the series group, so the point graphics
-	 * themselves act as trackers
-	 */
-	drawTracker: function () {
-		var series = this,
-			chart = series.chart,
-			pointer = chart.pointer,
-			cursor = series.options.cursor,
-			css = cursor && { cursor: cursor },
-			onMouseOver = function (e) {
-				var target = e.target,
-					point;
-
-				if (chart.hoverSeries !== series) {
-					series.onMouseOver();
-				}
-				while (target && !point) {
-					point = target.point;
-					target = target.parentNode;
-				}
-				if (point !== UNDEFINED && point !== chart.hoverPoint) { // undefined on graph in scatterchart
-					point.onMouseOver(e);
-				}
-			};
-
-		// Add reference to the point
-		each(series.points, function (point) {
-			if (point.graphic) {
-				point.graphic.element.point = point;
-			}
-			if (point.dataLabel) {
-				point.dataLabel.element.point = point;
-			}
-		});
-
-		// Add the event listeners, we need to do this only once
-		if (!series._hasTracking) {
-			each(series.trackerGroups, function (key) {
-				if (series[key]) { // we don't always have dataLabelsGroup
-					series[key]
-						.addClass(PREFIX + 'tracker')
-						.on('mouseover', onMouseOver)
-						.on('mouseout', function (e) { pointer.onTrackerMouseOut(e); })
-						.css(css);
-					if (hasTouch) {
-						series[key].on('touchstart', onMouseOver);
-					}
-				}
-			});
-			series._hasTracking = true;
-		}
-	},
-	
-	/** 
-	 * Override the basic data label alignment by adjusting for the position of the column
-	 */
-	alignDataLabel: function (point, dataLabel, options,  alignTo, isNew) {
-		var chart = this.chart,
-			inverted = chart.inverted,
-			dlBox = point.dlBox || point.shapeArgs, // data label box for alignment
-			below = point.below || (point.plotY > pick(this.translatedThreshold, chart.plotSizeY)),
-			inside = pick(options.inside, !!this.options.stacking); // draw it inside the box?
-		
-		// Align to the column itself, or the top of it
-		if (dlBox) { // Area range uses this method but not alignTo
-			alignTo = merge(dlBox);
-			if (inverted) {
-				alignTo = {
-					x: chart.plotWidth - alignTo.y - alignTo.height,
-					y: chart.plotHeight - alignTo.x - alignTo.width,
-					width: alignTo.height,
-					height: alignTo.width
-				};
-			}
-				
-			// Compute the alignment box
-			if (!inside) {
-				if (inverted) {
-					alignTo.x += below ? 0 : alignTo.width;
-					alignTo.width = 0;
-				} else {
-					alignTo.y += below ? alignTo.height : 0;
-					alignTo.height = 0;
-				}
-			}
-		}
-		
-		// When alignment is undefined (typically columns and bars), display the individual 
-		// point below or above the point depending on the threshold
-		options.align = pick(
-			options.align, 
-			!inverted || inside ? 'center' : below ? 'right' : 'left'
-		);
-		options.verticalAlign = pick(
-			options.verticalAlign, 
-			inverted || inside ? 'middle' : below ? 'top' : 'bottom'
-		);
-		
-		// Call the parent method
-		Series.prototype.alignDataLabel.call(this, point, dataLabel, options, alignTo, isNew);
-	},
-
 
 	/**
 	 * Animate the column heights one by one from zero
@@ -401,17 +340,23 @@ var ColumnSeries = extendClass(Series, {
 				series.group.attr(attr);
 
 			} else { // run the animation
-				
-				attr.scaleY = 1;
+
 				attr[inverted ? 'translateX' : 'translateY'] = yAxis.pos;
-				series.group.animate(attr, series.options.animation);
+				series.group.animate(attr, extend(animObject(series.options.animation), {
+					// Do the scale synchronously to ensure smooth updating (#5030)
+					step: function (val, fx) {
+						series.group.attr({
+							scaleY: fx.pos
+						});
+					}
+				}));
 
 				// delete this function to allow it only once
 				series.animate = null;
 			}
 		}
 	},
-	
+
 	/**
 	 * Remove this series from the chart
 	 */

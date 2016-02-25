@@ -13,13 +13,13 @@ $(function () {
             }
         },
         plotOptions: {
-            column:{
+            column: {
                 stacking: 'normal',
                 pointPadding: 0,
                 groupPadding: 0,
                 dataLabels: {
                     enabled: true,
-                    color: 'white'
+                    color: '#FFFFFF'
                 }
             }
         },

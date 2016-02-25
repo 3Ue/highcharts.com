@@ -12,36 +12,37 @@ var SplineSeries = extendClass(Series, {
 	/**
 	 * Get the spline segment from a given point's previous neighbour to the given point
 	 */
-	getPointSpline: function (segment, point, i) {
+	getPointSpline: function (points, point, i) {
 		var smoothing = 1.5, // 1 means control points midway between points, 2 means 1/3 from the point, 3 is 1/4 etc
 			denom = smoothing + 1,
 			plotX = point.plotX,
 			plotY = point.plotY,
-			lastPoint = segment[i - 1],
-			nextPoint = segment[i + 1],
+			lastPoint = points[i - 1],
+			nextPoint = points[i + 1],
 			leftContX,
 			leftContY,
 			rightContX,
 			rightContY,
 			ret;
 
-		// find control points
-		if (lastPoint && nextPoint) {
-		
+		// Find control points
+		if (lastPoint && !lastPoint.isNull && nextPoint && !nextPoint.isNull) {
 			var lastX = lastPoint.plotX,
 				lastY = lastPoint.plotY,
 				nextX = nextPoint.plotX,
 				nextY = nextPoint.plotY,
-				correction;
+				correction = 0;
 
 			leftContX = (smoothing * plotX + lastX) / denom;
 			leftContY = (smoothing * plotY + lastY) / denom;
 			rightContX = (smoothing * plotX + nextX) / denom;
 			rightContY = (smoothing * plotY + nextY) / denom;
 
-			// have the two control points make a straight line through main point
-			correction = ((rightContY - leftContY) * (rightContX - plotX)) /
-				(rightContX - leftContX) + plotY - rightContY;
+			// Have the two control points make a straight line through main point
+			if (rightContX !== leftContX) { // #5016, division by zero
+				correction = ((rightContY - leftContY) * (rightContX - plotX)) /
+					(rightContX - leftContX) + plotY - rightContY;
+			}
 
 			leftContY += correction;
 			rightContY += correction;
@@ -67,8 +68,9 @@ var SplineSeries = extendClass(Series, {
 			point.rightContX = rightContX;
 			point.rightContY = rightContY;
 
+			
 		}
-		
+
 		// Visualize control points for debugging
 		/*
 		if (leftContX) {
@@ -101,23 +103,17 @@ var SplineSeries = extendClass(Series, {
 				})
 				.add();
 		}
-		*/
-
-		// moveTo or lineTo
-		if (!i) {
-			ret = [M, plotX, plotY];
-		} else { // curve from last point to this
-			ret = [
-				'C',
-				lastPoint.rightContX || lastPoint.plotX,
-				lastPoint.rightContY || lastPoint.plotY,
-				leftContX || plotX,
-				leftContY || plotY,
-				plotX,
-				plotY
-			];
-			lastPoint.rightContX = lastPoint.rightContY = null; // reset for updating series later
-		}
+		// */
+		ret = [
+			'C',
+			pick(lastPoint.rightContX, lastPoint.plotX),
+			pick(lastPoint.rightContY, lastPoint.plotY),
+			pick(leftContX, plotX),
+			pick(leftContY, plotY),
+			plotX,
+			plotY
+		];
+		lastPoint.rightContX = lastPoint.rightContY = null; // reset for updating series later
 		return ret;
 	}
 });

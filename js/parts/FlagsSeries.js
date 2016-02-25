@@ -6,7 +6,6 @@ var symbols = SVGRenderer.prototype.symbols;
 
 // 1 - set default options
 defaultPlotOptions.flags = merge(defaultPlotOptions.column, {
-	dataGrouping: null,
 	fillColor: 'white',
 	lineWidth: 1,
 	pointRange: 0, // #673
@@ -36,7 +35,9 @@ seriesTypes.flags = extendClass(seriesTypes.column, {
 	type: 'flags',
 	sorted: false,
 	noSharedTooltip: true,
+	allowDG: false,
 	takeOrdinalPosition: false, // #1074
+	trackerGroups: ['markerGroup'],
 	forceCrop: true,
 	/**
 	 * Inherit the initialization from base Series
@@ -69,6 +70,7 @@ seriesTypes.flags = extendClass(seriesTypes.column, {
 			lastPoint,
 			optionsOnSeries = options.onSeries,
 			onSeries = optionsOnSeries && chart.get(optionsOnSeries),
+			onKey = options.onKey || 'y',
 			step = onSeries && onSeries.options.step,
 			onData = onSeries && onSeries.points,
 			i = onData && onData.length,
@@ -76,35 +78,35 @@ seriesTypes.flags = extendClass(seriesTypes.column, {
 			xAxisExt = xAxis.getExtremes(),
 			leftPoint,
 			lastX,
-			rightPoint;
+			rightPoint,
+			currentDataGrouping;
 
 		// relate to a master series
 		if (onSeries && onSeries.visible && i) {
-			lastX = onData[i - 1].x;
+			currentDataGrouping = onSeries.currentDataGrouping;
+			lastX = onData[i - 1].x + (currentDataGrouping ? currentDataGrouping.totalRange : 0); // #2374
 
 			// sort the data points
 			points.sort(function (a, b) {
 				return (a.x - b.x);
 			});
 
+			onKey = 'plot' + onKey[0].toUpperCase() + onKey.substr(1);
 			while (i-- && points[cursor]) {
 				point = points[cursor];
 				leftPoint = onData[i];
-				
-				
-				if (leftPoint.x <= point.x && leftPoint.plotY !== UNDEFINED) {
-					
+				if (leftPoint.x <= point.x && leftPoint[onKey] !== undefined) {
 					if (point.x <= lastX) { // #803
-					
-						point.plotY = leftPoint.plotY;
-					
+
+						point.plotY = leftPoint[onKey];
+
 						// interpolate between points, #666
-						if (leftPoint.x < point.x && !step) { 
+						if (leftPoint.x < point.x && !step) {
 							rightPoint = onData[i + 1];
-							if (rightPoint && rightPoint.plotY !== UNDEFINED) {
-								point.plotY += 
-									((point.x - leftPoint.x) / (rightPoint.x - leftPoint.x)) * // the distance ratio, between 0 and 1 
-									(rightPoint.plotY - leftPoint.plotY); // the y distance
+							if (rightPoint && rightPoint[onKey] !== UNDEFINED) {
+								point.plotY +=
+									((point.x - leftPoint.x) / (rightPoint.x - leftPoint.x)) * // the distance ratio, between 0 and 1
+									(rightPoint[onKey] - leftPoint[onKey]); // the y distance
 							}
 						}
 					}
@@ -119,13 +121,15 @@ seriesTypes.flags = extendClass(seriesTypes.column, {
 
 		// Add plotY position and handle stacking
 		each(points, function (point, i) {
-			
+
+			var stackIndex;
+
 			// Undefined plotY means the point is either on axis, outside series range or hidden series.
-			// If the series is outside the range of the x axis it should fall through with 
+			// If the series is outside the range of the x axis it should fall through with
 			// an undefined plotY, but then we must remove the shapeArgs (#847).
 			if (point.plotY === UNDEFINED) {
 				if (point.x >= xAxisExt.min && point.x <= xAxisExt.max) { // we're inside xAxis range
-					point.plotY = xAxis.lineTop - chart.plotTop;
+					point.plotY = chart.chartHeight - xAxis.bottom - (xAxis.opposite ? xAxis.height : 0) + xAxis.offset - chart.plotTop;
 				} else {
 					point.shapeArgs = {}; // 847
 				}
@@ -136,9 +140,9 @@ seriesTypes.flags = extendClass(seriesTypes.column, {
 				if (lastPoint.stackIndex === UNDEFINED) {
 					lastPoint.stackIndex = 0;
 				}
-				point.stackIndex = lastPoint.stackIndex + 1;
+				stackIndex = lastPoint.stackIndex + 1;
 			}
-					
+			point.stackIndex = stackIndex; // #3639
 		});
 
 
@@ -150,6 +154,7 @@ seriesTypes.flags = extendClass(seriesTypes.column, {
 	drawPoints: function () {
 		var series = this,
 			pointAttr,
+			seriesPointAttr = series.pointAttr[''],
 			points = series.points,
 			chart = series.chart,
 			renderer = chart.renderer,
@@ -158,35 +163,38 @@ seriesTypes.flags = extendClass(seriesTypes.column, {
 			options = series.options,
 			optionsY = options.y,
 			shape,
-			box,
-			bBox,
 			i,
 			point,
 			graphic,
 			stackIndex,
-			crisp = (options.lineWidth % 2 / 2),
 			anchorX,
-			anchorY;
+			anchorY,
+			outsideRight,
+			yAxis = series.yAxis;
 
 		i = points.length;
 		while (i--) {
 			point = points[i];
-			plotX = point.plotX + crisp;
+			outsideRight = point.plotX > series.xAxis.len;
+			plotX = point.plotX;
+			if (plotX > 0) { // #3119
+				plotX -= pick(point.lineWidth, options.lineWidth) % 2; // #4285
+			}
 			stackIndex = point.stackIndex;
 			shape = point.options.shape || options.shape;
 			plotY = point.plotY;
 			if (plotY !== UNDEFINED) {
-				plotY = point.plotY + optionsY + crisp - (stackIndex !== UNDEFINED && stackIndex * options.stackDistance);
+				plotY = point.plotY + optionsY - (stackIndex !== UNDEFINED && stackIndex * options.stackDistance);
 			}
-			anchorX = stackIndex ? UNDEFINED : point.plotX + crisp; // skip connectors for higher level stacked points
+			anchorX = stackIndex ? UNDEFINED : point.plotX; // skip connectors for higher level stacked points
 			anchorY = stackIndex ? UNDEFINED : point.plotY;
 
 			graphic = point.graphic;
 
-			// only draw the point if y is defined
-			if (plotY !== UNDEFINED) {
+			// only draw the point if y is defined and the flag is within the visible area
+			if (plotY !== UNDEFINED && plotX >= 0 && !outsideRight) {
 				// shortcuts
-				pointAttr = point.pointAttr[point.selected ? 'select' : ''];
+				pointAttr = point.pointAttr[point.selected ? 'select' : ''] || seriesPointAttr;
 				if (graphic) { // update
 					graphic.attr({
 						x: plotX,
@@ -212,23 +220,13 @@ seriesTypes.flags = extendClass(seriesTypes.column, {
 						width: options.width,
 						height: options.height
 					})
-					.add(series.group)
+					.add(series.markerGroup)
 					.shadow(options.shadow);
 
 				}
 
-				// get the bounding box
-				box = graphic.box;
-				bBox = box.getBBox();
-
-				// set the shape arguments for the tracker element
-				point.shapeArgs = extend(
-					bBox,
-					{
-						x: plotX - (shape === 'flag' ? 0 : box.attr('width') / 2), // flags align left, else align center
-						y: plotY
-					}
-				);
+				// Set the tooltip anchor position
+				point.tooltipPos = chart.inverted ? [yAxis.len + yAxis.pos - chart.plotLeft - plotY, series.xAxis.len - plotX] : [plotX, plotY];
 
 			} else if (graphic) {
 				point.graphic = graphic.destroy();
@@ -244,8 +242,8 @@ seriesTypes.flags = extendClass(seriesTypes.column, {
 	drawTracker: function () {
 		var series = this,
 			points = series.points;
-		
-		seriesTypes.column.prototype.drawTracker.apply(this);
+
+		TrackerMixin.drawTrackerPoint.apply(this);
 
 		// Bring each stacked flag up on mouse over, this allows readability of vertically
 		// stacked elements as well as tight points on the x axis. #1924.
@@ -280,7 +278,9 @@ seriesTypes.flags = extendClass(seriesTypes.column, {
 	/**
 	 * Disable animation
 	 */
-	animate: noop
+	animate: noop,
+	buildKDTree: noop,
+	setClip: noop
 
 });
 
@@ -296,7 +296,6 @@ symbols.flag = function (x, y, w, h, options) {
 		x + w, y,
 		x + w, y + h,
 		x, y + h,
-		'M', anchorX, anchorY,
 		'Z'
 	];
 };
@@ -307,8 +306,16 @@ each(['circle', 'square'], function (shape) {
 
 		var anchorX = options && options.anchorX,
 			anchorY = options &&  options.anchorY,
-			path = symbols[shape](x, y, w, h),
+			path,
 			labelTopOrBottomY;
+
+		// For single-letter flags, make sure circular flags are not taller than their width
+		if (shape === 'circle' && h > w) {
+			x -= mathRound((h - w) / 2);
+			w = h;
+		}
+
+		path = symbols[shape](x, y, w, h);
 
 		if (anchorX && anchorY) {
 			// if the label is below the anchor, draw the connecting line from the top edge of the label
@@ -324,7 +331,7 @@ each(['circle', 'square'], function (shape) {
 // The symbol callbacks are generated on the SVGRenderer object in all browsers. Even
 // VML browsers need this in order to generate shapes in export. Now share
 // them with the VMLRenderer.
-if (Renderer === VMLRenderer) {
+if (Renderer === Highcharts.VMLRenderer) {
 	each(['flag', 'circlepin', 'squarepin'], function (shape) {
 		VMLRenderer.prototype.symbols[shape] = symbols[shape];
 	});

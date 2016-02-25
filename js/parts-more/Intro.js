@@ -4,12 +4,15 @@
 /**
  * @license @product.name@ JS v@product.version@ (@product.date@)
  *
- * (c) 2009-2013 Torstein Hønsi
+ * (c) 2009-2016 Torstein Honsi
  *
  * License: www.highcharts.com/license
  */
 
-// JSLint options:
-/*global Highcharts, HighchartsAdapter, document, window, navigator, setInterval, clearInterval, clearTimeout, setTimeout, location, jQuery, $, console */
-
-(function (Highcharts, UNDEFINED) {
+(function (factory) {
+    if (typeof module === 'object' && module.exports) {
+        module.exports = factory;
+    } else {
+        factory(Highcharts);
+    }
+}(function (Highcharts) {

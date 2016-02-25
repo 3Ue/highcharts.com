@@ -1,7 +1,6 @@
 // encapsulated variables
 var UNDEFINED,
-	doc = document,
-	win = window,
+	doc = win.document,
 	math = Math,
 	mathRound = math.round,
 	mathFloor = math.floor,
@@ -16,29 +15,29 @@ var UNDEFINED,
 
 
 	// some variables
-	userAgent = navigator.userAgent,
+	userAgent = (win.navigator && win.navigator.userAgent) || '',
 	isOpera = win.opera,
-	isIE = /msie/i.test(userAgent) && !isOpera,
-	docMode8 = doc.documentMode === 8,
-	isWebKit = /AppleWebKit/.test(userAgent),
+	isMS = /(msie|trident|edge)/i.test(userAgent) && !isOpera,
+	docMode8 = doc && doc.documentMode === 8,
+	isWebKit = !isMS && /AppleWebKit/.test(userAgent),
 	isFirefox = /Firefox/.test(userAgent),
 	isTouchDevice = /(Mobile|Android|Windows Phone)/.test(userAgent),
 	SVG_NS = 'http://www.w3.org/2000/svg',
-	hasSVG = !!doc.createElementNS && !!doc.createElementNS(SVG_NS, 'svg').createSVGRect,
+	hasSVG = doc && doc.createElementNS && !!doc.createElementNS(SVG_NS, 'svg').createSVGRect,
 	hasBidiBug = isFirefox && parseInt(userAgent.split('Firefox/')[1], 10) < 4, // issue #38
-	useCanVG = !hasSVG && !isIE && !!doc.createElement('canvas').getContext,
+	useCanVG = doc && !hasSVG && !isMS && !!doc.createElement('canvas').getContext,
 	Renderer,
-	hasTouch = doc.documentElement.ontouchstart !== UNDEFINED,
+	hasTouch,
 	symbolSizes = {},
 	idCounter = 0,
 	garbageBin,
 	defaultOptions,
 	dateFormat, // function
-	globalAnimation,
 	pathAnim,
 	timeUnits,
 	noop = function () {},
 	charts = [],
+	chartCount = 0,
 	PRODUCT = '@product.name@',
 	VERSION = '@product.version@',
 
@@ -53,45 +52,31 @@ var UNDEFINED,
 	NONE = 'none',
 	M = 'M',
 	L = 'L',
-	/*
-	 * Empirical lowest possible opacities for TRACKER_FILL
-	 * IE6: 0.002
-	 * IE7: 0.002
-	 * IE8: 0.002
-	 * IE9: 0.00000000001 (unlimited)
-	 * IE10: 0.0001 (exporting only)
-	 * FF: 0.00000000001 (unlimited)
-	 * Chrome: 0.000001
-	 * Safari: 0.000001
-	 * Opera: 0.00000000001 (unlimited)
-	 */
-	TRACKER_FILL = 'rgba(192,192,192,' + (hasSVG ? 0.0001 : 0.002) + ')', // invisible but clickable
-	//TRACKER_FILL = 'rgba(192,192,192,0.5)',
+	numRegex = /^[0-9]+$/,
 	NORMAL_STATE = '',
 	HOVER_STATE = 'hover',
 	SELECT_STATE = 'select',
-	MILLISECOND = 'millisecond',
-	SECOND = 'second',
-	MINUTE = 'minute',
-	HOUR = 'hour',
-	DAY = 'day',
-	WEEK = 'week',
-	MONTH = 'month',
-	YEAR = 'year',
+	marginNames = ['plotTop', 'marginRight', 'marginBottom', 'plotLeft'],
+
+	// Object for extending Axis
+	AxisPlotLineOrBandExtension,
 
 	// constants for attributes
-	LINEAR_GRADIENT = 'linearGradient',
-	STOPS = 'stops',
 	STROKE_WIDTH = 'stroke-width',
 
 	// time methods, changed based on whether or not UTC is used
+	Date,  // Allow using a different Date class
 	makeTime,
+	timezoneOffset,
+	getTimezoneOffset,
 	getMinutes,
 	getHours,
 	getDay,
 	getDate,
 	getMonth,
 	getFullYear,
+	setMilliseconds,
+	setSeconds,
 	setMinutes,
 	setHours,
 	setDate,
@@ -100,7 +85,24 @@ var UNDEFINED,
 
 
 	// lookup over the types and the associated classes
-	seriesTypes = {};
+	seriesTypes = {},
+	Highcharts;
+
+/**
+ * Provide error messages for debugging, with links to online explanation
+ */
+function error(code, stop) {
+	var msg = 'Highcharts error #' + code + ': www.highcharts.com/errors/' + code;
+	if (stop) {
+		throw new Error(msg);
+	}
+	// else ...
+	if (win.console) {
+		console.log(msg); // eslint-disable-line no-console
+	}
+}
 
 // The Highcharts namespace
-win.Highcharts = win.Highcharts ? error(16, true) : {};
+Highcharts = win.Highcharts ? error(16, true) : { win: win };
+
+Highcharts.seriesTypes = seriesTypes;
